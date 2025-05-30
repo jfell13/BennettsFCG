@@ -7,12 +7,12 @@ import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 
 let scene, renderer, camera, floor, orbitControls;
-let group, followGroup, model, skeleton, mixer, clock;
-
+let group, followGroup, creatures, drones, model, skeleton, mixer, clock;
+let mixers = [];
 let actions;
 
 const settings = {
-    show_skeleton: false,
+    show_skeleton: true,
     fixe_transition: true,
 };
 
@@ -44,13 +44,19 @@ function init() {
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color( 0x87CEEB ); //0x5e5d5d grey
-    scene.fog = new THREE.Fog( 0x5e5d5d, 2, 20 );
+    // scene.fog = new THREE.Fog( 0x5e5d5d, 2, 20 );
 
     group = new THREE.Group();
     scene.add( group );
 
     followGroup = new THREE.Group();
     scene.add( followGroup );
+
+    creatures = new THREE.Group();
+    scene.add( creatures );
+
+    drones = new THREE.Group();
+    scene.add( drones );
 
     const dirLight = new THREE.DirectionalLight( 0xffffff, 5 );
     dirLight.position.set( - 2, 5, - 3 );
@@ -87,8 +93,6 @@ function init() {
     document.addEventListener( 'keyup', onKeyUp );
 
     // DEMO
-    // loadModel();
-    // createFloor()
     new RGBELoader()
         .setPath( 'textures/equirectangular/' )
         .load( 'lobe.hdr', function ( texture ) {
@@ -97,23 +101,102 @@ function init() {
             scene.environment = texture;
             scene.environmentIntensity = 1.5;
 
-            loadModel();
+            addCreatures();
+            addDrones();
+            loadPlayer();
             addFloor();
-            // createFloor();
         } );
 }
 
-function loadModel() {
-    const texture = new THREE.TextureLoader().load('textures/Bennett_01.png');
-    const material = new THREE.SpriteMaterial( { map: texture, transparent: true } );
-    const sprite = new THREE.Sprite( material );
-    scene.add( sprite );
-    group.add( sprite );
-    // sprite.rotation.y = PI;
-    // group.rotation.y = PI;
+function loadPlayer() {
+    const loader = new GLTFLoader();
+    loader.load( 'models/BP_V01.glb', function ( gltf ) {
+    // loader.load( 'scene.glb', function ( gltf ) {
+        model = gltf.scene;
+        group.add( model );
+        // model.rotation.y = PI;
+        // group.rotation.y = PI;
 
-    createPanel();
+        model.traverse( function ( object ) {
+        } );
+        //
+        skeleton = new THREE.SkeletonHelper( model );
+        skeleton.visible = false;
+        scene.add( skeleton );
+        //
+        createPanel();
+        //
+        const animations = gltf.animations;
 
+        mixer = new THREE.AnimationMixer( model );
+
+        actions = {
+            Idle: mixer.clipAction( animations[ 0 ] ),
+            Walk: mixer.clipAction( animations[ 1 ] ),
+            // Run: mixer.clipAction( animations[ 1 ] )
+        };
+        for ( const m in actions ) {
+            actions[ m ].enabled = true;
+            actions[ m ].setEffectiveTimeScale( 1 );
+            if ( m !== 'Idle' ) actions[ m ].setEffectiveWeight( 0 );
+        }
+        actions.Idle.play();
+        animate();
+    } );
+}
+
+function addCreatures() {
+    for (let i = 0; i < 1; i++) {
+        const loader = new GLTFLoader();
+        loader.load( 'models/npcs/Mousey_V01.glb', function ( gltf ) {
+            const creature = gltf.scene;
+            const posX =(Math.random() + i - 1) * 5 ;
+            const posZ = (Math.random() + i - 1) * 5;
+            creature.position.set(posX, 0, posZ);
+            // creature.scale.set(0.5, 0.5, 0.5);
+            creature.rotation.y = Math.random() * Math.PI * 2;
+            creature.animations = gltf.animations;            
+
+            scene.add( creature );
+            creatures.add( creature );
+        } );    
+    }
+}
+
+function animateCreatures( delta ) {
+    creatures.children.forEach((creature) => {
+        if (!creature.userData.mixer && creature.animations?.length) {
+            const mixer = new THREE.AnimationMixer(creature);
+            const action = mixer.clipAction(creature.animations[0]);
+            action.play();
+            creature.userData.mixer = mixer; // store mixer for reuse
+            mixers.push(mixer);
+        }
+    });
+    mixers.forEach(m => m.update(delta));
+}
+
+function addDrones() {
+    for (let i = 0; i < 3; i++) {
+        const loader = new GLTFLoader();
+        loader.load( 'models/drone.glb', function ( gltf ) {
+            const drone = gltf.scene;
+            const posX =(Math.random() + i - 1) * 5 ;
+            const posY = 1 + Math.random();
+            const posZ = (Math.random() + i - 1) * 5;
+            drone.position.set(posX, posY, posZ);
+            drone.scale.set(0.5, 0.5, 0.5);
+            drone.rotation.y = Math.random() * Math.PI * 2;
+            scene.add( drone );
+            drones.add( drone );
+            } );    
+    }
+}
+
+function animateDrones() {
+    drones.children.forEach((c, i) => {
+        c.position.y += 0.005 * Math.sin(Date.now() * 0.002 + i);
+    });
 }
 
 function updateCharacter( delta ) {
@@ -125,10 +208,34 @@ function updateCharacter( delta ) {
     const position = controls.position;
     const azimuth = orbitControls.getAzimuthalAngle();
 
-    const active = key[ 0 ] === 0 && key[ 1 ] === 0 ? false : true;
-    const play = active ? ( key[ 2 ] ? 'Run' : 'Walk' ) : 'Idle';
-    controls.current = play;
+    // const active = key[ 0 ] === 0 && key[ 1 ] === 0 ? false : true;
+    // const play = active ? ( key[ 2 ] ? 'Run' : 'Walk' ) : 'Idle';
+    const active = key[0] !== 0 || key[1] !== 0;
+    const play = active ? 'Walk' : 'Idle';
 
+    // change animation
+    if ( controls.current != play ) {
+        const current = actions[ play ];
+        const old = actions[ controls.current ];
+        controls.current = play;
+
+        if ( settings.fixe_transition ) {
+            current.reset();
+            current.weight = 1.0;
+            current.stopFading();
+            old.stopFading();
+            // synchro if not idle
+            if ( play !== 'Idle' ) current.time = old.time * ( current.getClip().duration / old.getClip().duration );
+            old._scheduleFading( fade, old.getEffectiveWeight(), 0 );
+            current._scheduleFading( fade, current.getEffectiveWeight(), 1 );
+            current.play();
+        } else {
+            setWeight( current, 1.0 );
+            old.fadeOut( fade );
+            current.reset().fadeIn( fade ).play();
+        }
+        controls.current = play;
+    }
     // move object
     if ( controls.current !== 'Idle' ) {
         // run/walk velocity
@@ -143,6 +250,8 @@ function updateCharacter( delta ) {
         position.add( ease );
         camera.position.add( ease );
 
+        // player.position.copy( position );
+        // player.quaternion.rotateTowards( rotate, controls.rotateSpeed );
         group.position.copy( position );
         group.quaternion.rotateTowards( rotate, controls.rotateSpeed );
 
@@ -192,42 +301,13 @@ function onWindowResize() {
 
 function createPanel() {
     const panel = new GUI({ width: 310});
-    panel.add(settings, 'show_skeleton').onChange(
-        (b) => {
-            skeleton.visible = b;
-        }
-    );
-    panel.add( settings, 'fixe_transition' );
+    // panel.add(settings, 'show_skeleton').onChange(
+    //     (b) => {
+    //         skeleton.visible = b;
+    //     }
+    // );
+    // panel.add( settings, 'fixe_transition' );
 }
-
-// function createFloor() {
-//     const size = 50;
-//     const floorGeometry = new THREE.PlaneGeometry( size, size, );  // Width and height of the plane
-//     const floorMaterial = new THREE.MeshPhongMaterial( { color: 0x999999, side: THREE.DoubleSide } );  // Color it gray for now
-//     // const floorMaterial = new THREE.MeshBasicMaterial( {color: 0xffff00, side: THREE.DoubleSide} );
-//     // const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
-//     // floorMaterial.anisotropy = maxAnisotropy;
-//     // floorMaterial.wrapS = floorMaterial.wrapT = THREE.RepeatWrapping;
-//     const floor = new THREE.Mesh( floorGeometry, floorMaterial );
-
-//     // Rotate the floor to be horizontal (plane geometries are vertical by default)
-//     floor.rotation.x = Math.PI / 2;
-//     // floor.rotateX( - PI90 );
-
-//     // Add shadow properties to the floor
-//     floor.receiveShadow = true;
-
-//     scene.add( floor );
-
-//     // const bulbGeometry = new THREE.SphereGeometry( 0.05, 16, 8 );
-//     // const bulbLight = new THREE.PointLight( 0xffee88, 2, 500, 2 );
-
-//     // const bulbMat = new THREE.MeshStandardMaterial( { emissive: 0xffffee, emissiveIntensity: 1, color: 0x000000 } );
-//     // bulbLight.add( new THREE.Mesh( bulbGeometry, bulbMat ) );
-//     // bulbLight.position.set( 1, 0.1, - 3 );
-//     // bulbLight.castShadow = true;
-//     // floor.add( bulbLight );
-// }
 
 function addFloor() {
     const size = 50;
@@ -269,10 +349,8 @@ function addFloor() {
 function animate() {
     // Render loop
     const delta = clock.getDelta();
+    animateCreatures( delta );
+    animateDrones();
     updateCharacter( delta );
-    // if (keys['ArrowUp']) sprite.position.y += 0.1;
-    // if (keys['ArrowDown']) sprite.position.y -= 0.1;
-    // if (keys['ArrowLeft']) sprite.position.x -= 0.1;
-    // if (keys['ArrowRight']) sprite.position.x += 0.1;
     renderer.render( scene, camera );
 }
